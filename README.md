@@ -24,6 +24,6 @@ Help Options:
 exec /usr/local/bin/relaxlogs --log-dir /var/log/app --rotation-time 1440 --max-age 44640
 ```
 
-logfile rotate in 1 day and max-age is 31 day.
-logfiles become `/var/log/app/log.%Y%m%d%H%M`.
-linkname becom `/var/log/app/current`.
+* logfile rotate in 1 day and max-age is 31 day.
+* logfiles become `/var/log/app/log.%Y%m%d%H%M`.
+* linkname becom `/var/log/app/current`.

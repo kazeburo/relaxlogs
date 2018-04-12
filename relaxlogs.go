@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -58,8 +59,19 @@ func writeTo(logDir string, rotationTime int64, maxAge int64) (io.Writer, error)
 	)
 }
 
-func main() {
-	os.Exit(run())
+func doFlush(writer *bufio.Writer, mu *sync.Mutex) {
+	mu.Lock()
+	defer mu.Unlock()
+	writer.Flush()
+}
+
+func doWrite(writer *bufio.Writer, buf []byte, mu *sync.Mutex) (int, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if writer.Available() > 0 && len(buf) > writer.Available() {
+		writer.Flush()
+	}
+	return writer.Write(buf)
 }
 
 func run() int {
@@ -93,21 +105,23 @@ Compiler: %s %s
 		syscall.SIGTERM,
 		syscall.SIGQUIT)
 
-	writer := bufio.NewWriterSize(iow, 4*1024)
-	defer writer.Flush()
+	mu := new(sync.Mutex)
+	writer := bufio.NewWriterSize(iow, 1024*1024)
+	defer doFlush(writer, mu)
 	go func() {
 		for {
 			time.Sleep(100 * time.Millisecond)
-			writer.Flush()
+			doFlush(writer, mu)
 		}
 	}()
 
 	bufioChan := make(chan error, 1)
+
 	stdin := bufio.NewScanner(os.Stdin)
 	stdin.Buffer(make([]byte, 10000), 1000000)
 	go func() {
 		for stdin.Scan() {
-			buf := make([]byte, 0, 100)
+			buf := make([]byte, 0, 2000)
 			if opts.WithTime {
 				buf = append(buf, '[')
 				buf = append(buf, currentTime()...)
@@ -115,7 +129,7 @@ Compiler: %s %s
 			}
 			buf = append(buf, stdin.Bytes()...)
 			buf = append(buf, '\n')
-			_, err := writer.Write(buf)
+			_, err = doWrite(writer, buf, mu)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -141,4 +155,8 @@ loop:
 	}
 
 	return exitCode
+}
+
+func main() {
+	os.Exit(run())
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -18,9 +17,10 @@ import (
 	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
 )
 
-var (
-	Version string
-)
+// Version by Makefile
+var Version string
+
+const relaxLoggerBufferSize = 1024 * 1024
 
 type cmdOpts struct {
 	LogDir       string `long:"log-dir" default:"" description:"Directory to store logfiles"`
@@ -30,13 +30,15 @@ type cmdOpts struct {
 	Version      bool   `short:"v" long:"version" description:"Show version"`
 }
 
-func currentTime() []byte {
-	return []byte(time.Now().Format("02/Jan/2006:15:04:05 +0900"))
+// RelaxLogger bufio with lock
+type RelaxLogger struct {
+	sync.Mutex
+	w *bufio.Writer
 }
 
-func writeTo(logDir string, rotationTime int64, maxAge int64) (io.Writer, error) {
+func newRelaxLogger(logDir string, rotationTime int64, maxAge int64) (*RelaxLogger, error) {
 	if logDir == "stdout" || logDir == "" {
-		return os.Stdout, nil
+		return &RelaxLogger{w: bufio.NewWriterSize(os.Stdout, relaxLoggerBufferSize)}, nil
 	}
 	absLogDir, err := filepath.Abs(logDir)
 	if err != nil {
@@ -51,27 +53,37 @@ func writeTo(logDir string, rotationTime int64, maxAge int64) (io.Writer, error)
 	logFile += "log.%Y%m%d%H%M"
 	linkName += "current"
 
-	return rotatelogs.New(
+	rl, err := rotatelogs.New(
 		logFile,
 		rotatelogs.WithLinkName(linkName),
 		rotatelogs.WithMaxAge(time.Duration(maxAge)*time.Minute),
 		rotatelogs.WithRotationTime(time.Duration(rotationTime)*time.Minute),
 	)
-}
-
-func doFlush(writer *bufio.Writer, mu *sync.Mutex) {
-	mu.Lock()
-	defer mu.Unlock()
-	writer.Flush()
-}
-
-func doWrite(writer *bufio.Writer, buf []byte, mu *sync.Mutex) (int, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	if writer.Available() > 0 && len(buf) > writer.Available() {
-		writer.Flush()
+	if err != nil {
+		return nil, err
 	}
-	return writer.Write(buf)
+	return &RelaxLogger{w: bufio.NewWriterSize(rl, relaxLoggerBufferSize)}, nil
+}
+
+// Flush with lock
+func (rl *RelaxLogger) Flush() {
+	rl.Lock()
+	defer rl.Unlock()
+	rl.w.Flush()
+}
+
+// Write with lock
+func (rl *RelaxLogger) Write(buf []byte) (int, error) {
+	rl.Lock()
+	defer rl.Unlock()
+	if rl.w.Available() > 0 && len(buf) > rl.w.Available() {
+		rl.w.Flush()
+	}
+	return rl.w.Write(buf)
+}
+
+func currentTime() []byte {
+	return []byte(time.Now().Format("02/Jan/2006:15:04:05 +0900"))
 }
 
 func run() int {
@@ -93,7 +105,7 @@ Compiler: %s %s
 		return 0
 	}
 
-	iow, err := writeTo(opts.LogDir, opts.RotationTime, opts.MaxAge)
+	rl, err := newRelaxLogger(opts.LogDir, opts.RotationTime, opts.MaxAge)
 	if err != nil {
 		log.Fatalf("failed initialize logger: %v", err)
 	}
@@ -105,13 +117,11 @@ Compiler: %s %s
 		syscall.SIGTERM,
 		syscall.SIGQUIT)
 
-	mu := new(sync.Mutex)
-	writer := bufio.NewWriterSize(iow, 1024*1024)
-	defer doFlush(writer, mu)
+	defer rl.Flush()
 	go func() {
 		for {
 			time.Sleep(100 * time.Millisecond)
-			doFlush(writer, mu)
+			rl.Flush()
 		}
 	}()
 
@@ -129,7 +139,7 @@ Compiler: %s %s
 			}
 			buf = append(buf, stdin.Bytes()...)
 			buf = append(buf, '\n')
-			_, err = doWrite(writer, buf, mu)
+			_, err = rl.Write(buf)
 			if err != nil {
 				log.Fatal(err)
 			}

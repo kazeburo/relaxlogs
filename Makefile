@@ -1,14 +1,8 @@
 VERSION=0.0.3
-LDFLAGS=-ldflags "-X main.Version=${VERSION}"
+LDFLAGS=-ldflags "-w -s -X main.Version=${VERSION}"
 all: relaxlogs
 
 .PHONY: relaxlogs
-
-bundle:
-	dep ensure
-
-update:
-	dep ensure -update
 
 relaxlogs: relaxlogs.go
 	go build $(LDFLAGS) -o relaxlogs

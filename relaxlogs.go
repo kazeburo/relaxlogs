@@ -22,6 +22,8 @@ var Version string
 
 const relaxLoggerBufferSize = 1024 * 1024
 
+const timeFormat = "02/Jan/2006:15:04:05 +0900"
+
 type cmdOpts struct {
 	LogDir       string `long:"log-dir" default:"" description:"Directory to store logfiles"`
 	RotationTime int64  `long:"rotation-time" default:"60" description:"The time between log file rotations in minutes"`
@@ -32,11 +34,14 @@ type cmdOpts struct {
 
 // RelaxLogger bufio with lock
 type RelaxLogger struct {
-	sync.Mutex
-	w *bufio.Writer
+	sm        sync.Mutex
+	tm        sync.RWMutex
+	w         *bufio.Writer
+	withTime  bool
+	timestamp []byte
 }
 
-func newRelaxLogger(logDir string, rotationTime int64, maxAge int64) (*RelaxLogger, error) {
+func newRelaxLogger(withTime bool, logDir string, rotationTime int64, maxAge int64) (*RelaxLogger, error) {
 	if logDir == "stdout" || logDir == "" {
 		return &RelaxLogger{w: bufio.NewWriterSize(os.Stdout, relaxLoggerBufferSize)}, nil
 	}
@@ -53,7 +58,7 @@ func newRelaxLogger(logDir string, rotationTime int64, maxAge int64) (*RelaxLogg
 	logFile += "log.%Y%m%d%H%M"
 	linkName += "current"
 
-	rl, err := rotatelogs.New(
+	logger, err := rotatelogs.New(
 		logFile,
 		rotatelogs.WithLinkName(linkName),
 		rotatelogs.WithMaxAge(time.Duration(maxAge)*time.Minute),
@@ -62,28 +67,84 @@ func newRelaxLogger(logDir string, rotationTime int64, maxAge int64) (*RelaxLogg
 	if err != nil {
 		return nil, err
 	}
-	return &RelaxLogger{w: bufio.NewWriterSize(rl, relaxLoggerBufferSize)}, nil
+
+	bufsize := relaxLoggerBufferSize + 1
+	if withTime {
+		bufsize += len(timeFormat) + 3
+	}
+
+	rl := &RelaxLogger{
+		w:        bufio.NewWriterSize(logger, bufsize),
+		withTime: withTime,
+	}
+	rl.TimeTicker()
+	return rl, nil
 }
 
 // Flush with lock
 func (rl *RelaxLogger) Flush() {
-	rl.Lock()
-	defer rl.Unlock()
+	rl.sm.Lock()
+	defer rl.sm.Unlock()
 	rl.w.Flush()
 }
 
 // Write with lock
 func (rl *RelaxLogger) Write(buf []byte) (int, error) {
-	rl.Lock()
-	defer rl.Unlock()
-	if rl.w.Available() > 0 && len(buf) > rl.w.Available() {
+	rl.sm.Lock()
+	defer rl.sm.Unlock()
+	bufLen := len(buf) + 1 //newline
+	if rl.withTime {
+		bufLen += len(timeFormat) + 3
+	}
+
+	if rl.w.Available() > 0 && bufLen > rl.w.Available() {
 		rl.w.Flush()
 	}
-	return rl.w.Write(buf)
+	timestampLen := 0
+	var err error
+	if rl.withTime {
+		timestampLen, err = rl.w.Write(rl.getTimestamp())
+		if err != nil {
+			return timestampLen, err
+		}
+	}
+	bodyLen, err := rl.w.Write(buf)
+	bodyLen += timestampLen
+	if err != nil {
+		return bodyLen, err
+	}
+
+	err = rl.w.WriteByte('\n')
+	if err != nil {
+		return bodyLen, err
+	}
+	bodyLen++ // newline
+	return bodyLen, err
 }
 
-func currentTime() []byte {
-	return []byte(time.Now().Format("02/Jan/2006:15:04:05 +0900"))
+// TimeTicker : run time updater
+func (rl *RelaxLogger) TimeTicker() {
+	rl.tm.Lock()
+	rl.timestamp = []byte("[" + time.Now().Format(timeFormat) + "] ")
+	rl.tm.Unlock()
+
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for {
+			select {
+			case _ = <-ticker.C:
+				rl.tm.Lock()
+				rl.timestamp = []byte("[" + time.Now().Format("02/Jan/2006:15:04:05 +0900") + "] ")
+				rl.tm.Unlock()
+			}
+		}
+	}()
+}
+
+func (rl *RelaxLogger) getTimestamp() []byte {
+	rl.tm.RLock()
+	defer rl.tm.RUnlock()
+	return rl.timestamp
 }
 
 func run() int {
@@ -105,7 +166,7 @@ Compiler: %s %s
 		return 0
 	}
 
-	rl, err := newRelaxLogger(opts.LogDir, opts.RotationTime, opts.MaxAge)
+	rl, err := newRelaxLogger(opts.WithTime, opts.LogDir, opts.RotationTime, opts.MaxAge)
 	if err != nil {
 		log.Fatalf("failed initialize logger: %v", err)
 	}
@@ -128,18 +189,10 @@ Compiler: %s %s
 	bufioChan := make(chan error, 1)
 
 	stdin := bufio.NewScanner(os.Stdin)
-	stdin.Buffer(make([]byte, 10000), 1000000)
+	stdin.Buffer(make([]byte, 10000), relaxLoggerBufferSize)
 	go func() {
 		for stdin.Scan() {
-			buf := make([]byte, 0, 2000)
-			if opts.WithTime {
-				buf = append(buf, '[')
-				buf = append(buf, currentTime()...)
-				buf = append(buf, ']', ' ')
-			}
-			buf = append(buf, stdin.Bytes()...)
-			buf = append(buf, '\n')
-			_, err = rl.Write(buf)
+			_, err = rl.Write(stdin.Bytes())
 			if err != nil {
 				log.Fatal(err)
 			}

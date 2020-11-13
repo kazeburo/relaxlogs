@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -41,9 +42,9 @@ type RelaxLogger struct {
 	timestamp []byte
 }
 
-func newRelaxLogger(withTime bool, logDir string, rotationTime int64, maxAge int64) (*RelaxLogger, error) {
+func makeLogger(logDir string, rotationTime int64, maxAge int64) (io.Writer, error) {
 	if logDir == "stdout" || logDir == "" {
-		return &RelaxLogger{w: bufio.NewWriterSize(os.Stdout, relaxLoggerBufferSize)}, nil
+		return os.Stdout, nil
 	}
 	absLogDir, err := filepath.Abs(logDir)
 	if err != nil {
@@ -58,12 +59,16 @@ func newRelaxLogger(withTime bool, logDir string, rotationTime int64, maxAge int
 	logFile += "log.%Y%m%d%H%M"
 	linkName += "current"
 
-	logger, err := rotatelogs.New(
+	return rotatelogs.New(
 		logFile,
 		rotatelogs.WithLinkName(linkName),
 		rotatelogs.WithMaxAge(time.Duration(maxAge)*time.Minute),
 		rotatelogs.WithRotationTime(time.Duration(rotationTime)*time.Minute),
 	)
+}
+
+func newRelaxLogger(withTime bool, logDir string, rotationTime int64, maxAge int64) (*RelaxLogger, error) {
+	logger, err := makeLogger(logDir, rotationTime, maxAge)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +139,7 @@ func (rl *RelaxLogger) TimeTicker() {
 			select {
 			case _ = <-ticker.C:
 				rl.tm.Lock()
-				rl.timestamp = []byte("[" + time.Now().Format("02/Jan/2006:15:04:05 +0900") + "] ")
+				rl.timestamp = []byte("[" + time.Now().Format(timeFormat) + "] ")
 				rl.tm.Unlock()
 			}
 		}

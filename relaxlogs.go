@@ -35,11 +35,11 @@ type cmdOpts struct {
 
 // RelaxLogger bufio with lock
 type RelaxLogger struct {
-	sm        sync.Mutex
-	tm        sync.RWMutex
+	sync.Mutex
 	w         *bufio.Writer
 	withTime  bool
 	timestamp []byte
+	unix      int64
 }
 
 func makeLogger(logDir string, rotationTime int64, maxAge int64) (io.Writer, error) {
@@ -82,21 +82,20 @@ func newRelaxLogger(withTime bool, logDir string, rotationTime int64, maxAge int
 		w:        bufio.NewWriterSize(logger, bufsize),
 		withTime: withTime,
 	}
-	rl.TimeTicker()
 	return rl, nil
 }
 
 // Flush with lock
 func (rl *RelaxLogger) Flush() {
-	rl.sm.Lock()
-	defer rl.sm.Unlock()
+	rl.Lock()
+	defer rl.Unlock()
 	rl.w.Flush()
 }
 
 // Write with lock
 func (rl *RelaxLogger) Write(buf []byte) (int, error) {
-	rl.sm.Lock()
-	defer rl.sm.Unlock()
+	rl.Lock()
+	defer rl.Unlock()
 	bufLen := len(buf) + 1 //newline
 	if rl.withTime {
 		bufLen += len(timeFormat) + 3
@@ -127,28 +126,13 @@ func (rl *RelaxLogger) Write(buf []byte) (int, error) {
 	return bodyLen, err
 }
 
-// TimeTicker : run time updater
-func (rl *RelaxLogger) TimeTicker() {
-	rl.tm.Lock()
-	rl.timestamp = []byte("[" + time.Now().Format(timeFormat) + "] ")
-	rl.tm.Unlock()
-
-	ticker := time.NewTicker(1 * time.Second)
-	go func() {
-		for {
-			select {
-			case _ = <-ticker.C:
-				rl.tm.Lock()
-				rl.timestamp = []byte("[" + time.Now().Format(timeFormat) + "] ")
-				rl.tm.Unlock()
-			}
-		}
-	}()
-}
-
 func (rl *RelaxLogger) getTimestamp() []byte {
-	rl.tm.RLock()
-	defer rl.tm.RUnlock()
+	now := time.Now().Unix()
+	if now == rl.unix {
+		return rl.timestamp
+	}
+	rl.unix = now
+	rl.timestamp = []byte("[" + time.Unix(now, 0).Format(timeFormat) + "] ")
 	return rl.timestamp
 }
 

@@ -1,4 +1,4 @@
-VERSION=0.0.4
+VERSION=0.0.5
 LDFLAGS=-ldflags "-w -s -X main.Version=${VERSION}"
 all: relaxlogs
 

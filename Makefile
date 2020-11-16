@@ -4,10 +4,10 @@ all: relaxlogs
 
 .PHONY: relaxlogs
 
-relaxlogs: relaxlogs.go
+relaxlogs: relaxlogs.go logger/*.go
 	go build $(LDFLAGS) -o relaxlogs
 
-linux: relaxlogs.go
+linux: relaxlogs.go logger/*.go
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o relaxlogs
 
 fmt:
